@@ -128,7 +128,6 @@ class CNNModel(nn.Module):
         self.flatten_dim = 64 * (h // 2) * (w // 2)
         self.fc1 = nn.Linear(self.flatten_dim, 128)
         self.fc2 = nn.Linear(128, num_classes)
-        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
         x = torch.relu(self.conv1(x))
@@ -137,7 +136,8 @@ class CNNModel(nn.Module):
         x = x.view(-1, self.flatten_dim)
         x = torch.relu(self.fc1(x))
         x = self.fc2(x)
-        return self.softmax(x)
+        # Return raw logits; softmax will be applied as needed
+        return x
 
 # -----------------------------------------------------------------------------
 # Helper functions for weights
@@ -283,12 +283,15 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device):
     y_true, y_pred = [], []
     loss_sum = 0.0
     criterion = nn.CrossEntropyLoss()
+    all_probs = []
     with torch.no_grad():
         for x, y in loader:
             x, y = x.to(device), y.to(device)
-            out = model(x)
-            loss_sum += criterion(out, y).item() * x.size(0)
-            y_pred.extend(out.argmax(1).cpu().numpy())
+            logits = model(x)
+            loss_sum += criterion(logits, y).item() * x.size(0)
+            probs = torch.softmax(logits, dim=1)
+            all_probs.append(probs.cpu().numpy())
+            y_pred.extend(probs.argmax(1).cpu().numpy())
             y_true.extend(y.cpu().numpy())
     n = len(loader.dataset)
     loss = loss_sum / n
@@ -296,7 +299,9 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device):
     precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
     recall = recall_score(y_true, y_pred, average='macro', zero_division=0)
     try:
-        auc = roc_auc_score(np.eye(10)[y_true], np.eye(10)[y_pred], multi_class='ovo')
+        prob_matrix = np.vstack(all_probs)
+        labels = np.array(y_true)
+        auc = roc_auc_score(np.eye(prob_matrix.shape[1])[labels], prob_matrix, multi_class='ovo')
     except ValueError:
         auc = 0.0
     model.train()
